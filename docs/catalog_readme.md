@@ -19,7 +19,7 @@ hola|hello
 adios|goodbye
 ```
 
-### Sample decks
+**Sample decks**
 
 On first launch, FlipFlash creates two small Spanish test decks (spanish_words.txt and spanish_verbs.txt) automatically if the deck file does not exist. 
 
