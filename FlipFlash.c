@@ -14,12 +14,11 @@ typedef enum {
 
 typedef enum {
     FlashSettingToggleMode = 0,
-    FlashSettingRestoreRemoved = 1,
-    FlashSettingResetDeck = 2,
-    FlashSettingCycleDeck = 3,
-    FlashSettingHelp = 4,
-    FlashSettingBack = 5,
-    FlashSettingCount = 6,
+    FlashSettingResetDeck = 1,
+    FlashSettingCycleDeck = 2,
+    FlashSettingHelp = 3,
+    FlashSettingBack = 4,
+    FlashSettingCount = 5,
 } FlashSetting;
 
 typedef struct {
@@ -54,7 +53,8 @@ typedef struct {
     size_t deck_count;
     char current_deck_path[MAX_PATH_LENGTH];
     char current_state_path[MAX_PATH_LENGTH];
-    char selected_deck_path[MAX_PATH_LENGTH];
+    size_t help_scroll;
+    size_t settings_scroll;
 } FlashApp;
 
 static bool flash_write_line(File* file, const char* line);
@@ -83,6 +83,15 @@ static const char* const flash_verbs_deck[] = {
     "querer|to want",
     "poder|can / to be able",
 };
+
+static const char* help_lines[] = {
+    "Right: next card",
+    "OK: flip front/back",
+    "Down: remove card",
+    "Up: settings",
+    "Back: return/cancel/exit",
+};
+#define HELP_LINE_COUNT COUNT_OF(help_lines)
 
 static void flash_trim(char* text) {
     if(!text) return;
@@ -128,13 +137,6 @@ static void flash_build_deck_stem(const char* filename, char* stem, size_t stem_
     if(dot) {
         *dot = '\0';
     }
-
-    flash_trim(stem);
-    for(char* ch = stem; *ch != '\0'; ch++) {
-        if(*ch == '_' || *ch == '-') {
-            *ch = ' ';
-        }
-    }
 }
 
 static void flash_build_state_path(const char* deck_path, char* state_path, size_t state_path_size) {
@@ -144,6 +146,7 @@ static void flash_build_state_path(const char* deck_path, char* state_path, size
         strlcpy(stem, "deck", sizeof(stem));
     }
 
+    // snprintf: format and safely copy text into a string buffer. 
     snprintf(state_path, state_path_size, "%s/%s.state", APP_DATA_DIR, stem);
 }
 
@@ -153,7 +156,7 @@ static bool flash_is_deck_filename(const char* name) {
     const char* dot = strrchr(name, '.');
     if(dot == NULL || strcmp(dot, ".txt") != 0) return false;
 
-    return strcmp(name, "selected_deck.cfg") != 0;
+    return true;
 }
 
 static bool flash_write_default_deck(FlashApp* app, const char* filename, const char* const* lines, size_t line_count) {
@@ -235,11 +238,7 @@ static int flash_find_deck_index_by_path(const FlashApp* app, const char* path) 
     return -1;
 }
 
-static void flash_refresh_deck_catalog(FlashApp* app) {
-    FURI_LOG_I(TAG, "refresh deck catalog start");
-    app->deck_count = 0;
-    storage_common_mkdir(app->storage, APP_DATA_DIR);
-
+static void flash_read_all_decks(FlashApp* app) {
     if(storage_dir_open(app->file, APP_DATA_DIR)) {
         FileInfo info;
         char name[MAX_TEXT_LENGTH];
@@ -259,29 +258,19 @@ static void flash_refresh_deck_catalog(FlashApp* app) {
 
         storage_dir_close(app->file);
     }
+}
+
+static void flash_refresh_deck_catalog(FlashApp* app) {
+    FURI_LOG_I(TAG, "refresh deck catalog start");
+    app->deck_count = 0;
+    storage_common_mkdir(app->storage, APP_DATA_DIR);
+
+    flash_read_all_decks(app);
 
     if(app->deck_count == 0) {
         flash_write_default_decks(app);
 
-        if(storage_dir_open(app->file, APP_DATA_DIR)) {
-            FileInfo info;
-            char name[MAX_TEXT_LENGTH];
-
-            while(storage_dir_read(app->file, &info, name, sizeof(name))) {
-                if(file_info_is_dir(&info)) continue;
-                if(!flash_is_deck_filename(name)) continue;
-                if(app->deck_count >= MAX_DECKS) break;
-
-                snprintf(app->decks[app->deck_count].path, sizeof(app->decks[app->deck_count].path), "%s/%s", APP_DATA_DIR, name);
-                flash_build_deck_stem(name, app->decks[app->deck_count].name, sizeof(app->decks[app->deck_count].name));
-                if(app->decks[app->deck_count].name[0] == '\0') {
-                    strlcpy(app->decks[app->deck_count].name, name, sizeof(app->decks[app->deck_count].name));
-                }
-                app->deck_count++;
-            }
-
-            storage_dir_close(app->file);
-        }
+        flash_read_all_decks(app);
     }
 
     for(size_t i = 1; i < app->deck_count; i++) {
@@ -350,94 +339,94 @@ static const char* flash_get_active_deck_name(const FlashApp* app) {
     return deck->name;
 }
 
-static void flash_save_state(FlashApp* app) {
-    storage_common_mkdir(app->storage, APP_DATA_DIR);
+// static void flash_save_state(FlashApp* app) {
+//     storage_common_mkdir(app->storage, APP_DATA_DIR);
 
-    if(app->current_state_path[0] == '\0') {
-        return;
-    }
+//     if(app->current_state_path[0] == '\0') {
+//         return;
+//     }
 
-    if(!storage_file_open(app->file, app->current_state_path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
-        FURI_LOG_E(TAG, "Unable to save state file");
-        return;
-    }
+//     if(!storage_file_open(app->file, app->current_state_path, FSAM_WRITE, FSOM_CREATE_ALWAYS)) {
+//         FURI_LOG_E(TAG, "Unable to save state file");
+//         return;
+//     }
 
-    char line[64];
-    snprintf(line, sizeof(line), "mode=%s\n", app->mode == FlashModeRandom ? "random" : "ordered");
-    flash_write_line(app->file, line);
+//     char line[64];
+//     snprintf(line, sizeof(line), "mode=%s\n", app->mode == FlashModeRandom ? "random" : "ordered");
+//     flash_write_line(app->file, line);
 
-    flash_write_line(app->file, "removed=");
-    bool first_removed = true;
-    for(size_t i = 0; i < app->card_count; i++) {
-        if(!app->cards[i].removed) continue;
-        if(!first_removed) flash_write_line(app->file, ",");
-        snprintf(line, sizeof(line), "%zu", i);
-        flash_write_line(app->file, line);
-        first_removed = false;
-    }
-    flash_write_line(app->file, "\n");
+//     flash_write_line(app->file, "removed=");
+//     bool first_removed = true;
+//     for(size_t i = 0; i < app->card_count; i++) {
+//         if(!app->cards[i].removed) continue;
+//         if(!first_removed) flash_write_line(app->file, ",");
+//         snprintf(line, sizeof(line), "%zu", i);
+//         flash_write_line(app->file, line);
+//         first_removed = false;
+//     }
+//     flash_write_line(app->file, "\n");
 
-    storage_file_close(app->file);
-}
+//     storage_file_close(app->file);
+// }
 
-static void flash_apply_saved_state(FlashApp* app) {
-    if(app->current_state_path[0] == '\0') {
-        flash_reset_deck_state(app);
-        return;
-    }
+// static void flash_apply_saved_state(FlashApp* app) {
+//     if(app->current_state_path[0] == '\0') {
+//         flash_reset_deck_state(app);
+//         return;
+//     }
 
-    if(!storage_file_open(app->file, app->current_state_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
-        flash_reset_deck_state(app);
-        return;
-    }
+//     if(!storage_file_open(app->file, app->current_state_path, FSAM_READ, FSOM_OPEN_EXISTING)) {
+//         flash_reset_deck_state(app);
+//         return;
+//     }
 
-    app->mode = FlashModeOrdered;
-    for(size_t i = 0; i < app->card_count; i++) {
-        app->cards[i].removed = false;
-    }
+//     app->mode = FlashModeOrdered;
+//     for(size_t i = 0; i < app->card_count; i++) {
+//         app->cards[i].removed = false;
+//     }
 
-    char line[MAX_LINE_LENGTH];
-    while(flash_read_line(app->file, line, sizeof(line))) {
-        flash_trim(line);
+//     char line[MAX_LINE_LENGTH];
+//     while(flash_read_line(app->file, line, sizeof(line))) {
+//         flash_trim(line);
 
-        if(strncmp(line, "mode=", 5) == 0) {
-            const char* mode_value = line + 5;
-            if(strcmp(mode_value, "random") == 0) {
-                app->mode = FlashModeRandom;
-            } else {
-                app->mode = FlashModeOrdered;
-            }
-            continue;
-        }
+//         if(strncmp(line, "mode=", 5) == 0) {
+//             const char* mode_value = line + 5;
+//             if(strcmp(mode_value, "random") == 0) {
+//                 app->mode = FlashModeRandom;
+//             } else {
+//                 app->mode = FlashModeOrdered;
+//             }
+//             continue;
+//         }
 
-        if(strncmp(line, "removed=", 8) == 0) {
-            const char* removed_value = line + 8;
-            const char* cursor = removed_value;
+//         if(strncmp(line, "removed=", 8) == 0) {
+//             const char* removed_value = line + 8;
+//             const char* cursor = removed_value;
 
-            while(*cursor != '\0') {
-                while(*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
-                    cursor++;
-                }
+//             while(*cursor != '\0') {
+//                 while(*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
+//                     cursor++;
+//                 }
 
-                if(*cursor == '\0') break;
+//                 if(*cursor == '\0') break;
 
-                char* end = NULL;
-                long index = strtol(cursor, &end, 10);
-                if(index >= 0 && (size_t)index < app->card_count) {
-                    app->cards[index].removed = true;
-                }
+//                 char* end = NULL;
+//                 long index = strtol(cursor, &end, 10);
+//                 if(index >= 0 && (size_t)index < app->card_count) {
+//                     app->cards[index].removed = true;
+//                 }
 
-                if(end == cursor) {
-                    break;
-                }
+//                 if(end == cursor) {
+//                     break;
+//                 }
 
-                cursor = end;
-            }
-        }
-    }
+//                 cursor = end;
+//             }
+//         }
+//     }
 
-    storage_file_close(app->file);
-}
+//     storage_file_close(app->file);
+// }
 
 static int flash_count_active_cards(const FlashApp* app) {
     int active_count = 0;
@@ -510,15 +499,6 @@ static void flash_advance_to_next_card(FlashApp* app) {
     }
 }
 
-static void flash_restore_removed_cards(FlashApp* app) {
-    for(size_t i = 0; i < app->card_count; i++) {
-        app->cards[i].removed = false;
-    }
-    app->current_card = flash_find_first_active(app);
-    app->showing_back = false;
-    flash_save_state(app);
-}
-
 static void flash_reset_current_deck(FlashApp* app) {
     for(size_t i = 0; i < app->card_count; i++) {
         app->cards[i].removed = false;
@@ -527,33 +507,30 @@ static void flash_reset_current_deck(FlashApp* app) {
     app->mode = FlashModeOrdered;
     app->current_card = flash_find_first_active(app);
     app->showing_back = false;
-    flash_save_state(app);
+    // flash_save_state(app);
 }
 
-static void flash_draw_help(Canvas* canvas) {
+static void flash_draw_help(Canvas* canvas, FlashApp* app) {
     canvas_set_font(canvas, FontPrimary);
     canvas_draw_str(canvas, 2, 10, "Help");
 
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 4, 26, "Right: next card");
-    canvas_draw_str(canvas, 4, 38, "OK: flip front/back");
-    canvas_draw_str(canvas, 4, 50, "Down: remove card");
-    canvas_draw_str(canvas, 4, 62, "Back: exit app");
+    int start = app->help_scroll;
+    int y = 26;
+    for(size_t i = start; i < HELP_LINE_COUNT && y <= 64; i++) {
+        canvas_draw_str(canvas, 4, y, help_lines[i]);
+        y += HELP_LINE_HEIGHT;
+    }
 }
 
 static void flash_cycle_deck(FlashApp* app) {
     if(app->deck_count == 0) return;
 
+    int previous_index = app->deck_index;
     char previous_deck_path[MAX_PATH_LENGTH];
     strlcpy(previous_deck_path, app->current_deck_path, sizeof(previous_deck_path));
 
-    flash_save_state(app);
-    flash_refresh_deck_catalog(app);
-
-    int previous_index = flash_find_deck_index_by_path(app, previous_deck_path);
-    if(previous_index < 0) {
-        previous_index = (int)app->deck_index;
-    }
+    // flash_save_state(app);
 
     size_t next_index = (size_t)((previous_index + 1) % (int)app->deck_count);
     flash_activate_deck(app, next_index, true);
@@ -565,7 +542,7 @@ static void flash_activate_deck(FlashApp* app, size_t deck_index, bool persist_s
         app->current_deck_path[0] = '\0';
         app->current_state_path[0] = '\0';
         flash_reset_deck_state(app);
-        FURI_LOG_I(TAG, "activate deck no decks");
+        FURI_LOG_E(TAG, "no active decks");
         return;
     }
 
@@ -575,18 +552,17 @@ static void flash_activate_deck(FlashApp* app, size_t deck_index, bool persist_s
 
     app->deck_index = deck_index;
     strlcpy(app->current_deck_path, app->decks[app->deck_index].path, sizeof(app->current_deck_path));
-    strlcpy(app->selected_deck_path, app->current_deck_path, sizeof(app->selected_deck_path));
     FURI_LOG_I(TAG, "activate deck path=%s", app->current_deck_path);
     flash_build_state_path(app->current_deck_path, app->current_state_path, sizeof(app->current_state_path));
     FURI_LOG_I(TAG, "activate deck state path=%s", app->current_state_path);
 
     if(!flash_load_deck(app)) {
         flash_reset_deck_state(app);
-        FURI_LOG_I(TAG, "activate deck failed to load deck");
+        FURI_LOG_E(TAG, "failed to load active deck");
         return;
     }
 
-    flash_apply_saved_state(app);
+    // flash_apply_saved_state(app);
 
     if(app->current_card < 0) {
         app->current_card = flash_find_first_active(app);
@@ -599,7 +575,7 @@ static void flash_remove_current_card(FlashApp* app) {
     if(app->current_card < 0 || (size_t)app->current_card >= app->card_count) return;
 
     app->cards[app->current_card].removed = true;
-    flash_save_state(app);
+    // flash_save_state(app);
     flash_advance_to_next_card(app);
 }
 
@@ -650,7 +626,6 @@ static void flash_draw_settings(Canvas* canvas, FlashApp* app) {
 
     const char* items[FlashSettingCount] = {
         app->mode == FlashModeRandom ? "Order: random" : "Order: in order",
-        "Restore removed cards",
         "Reset current deck",
         deck_item,
         "Help / controls",
@@ -658,8 +633,9 @@ static void flash_draw_settings(Canvas* canvas, FlashApp* app) {
     };
 
     canvas_set_font(canvas, FontSecondary);
-    for(size_t i = 0; i < FlashSettingCount; i++) {
-        const int y = 26 + (int)i * 12;
+    for(size_t i = app->settings_scroll; i < FlashSettingCount && i < app->settings_scroll + SETTINGS_VISIBLE_ITEMS; i++) {
+        const int y = 26 + (i - app->settings_scroll) * 12;
+
         if((FlashSetting)i == app->settings_cursor) {
             canvas_draw_box(canvas, 1, y - 9, 126, 11);
             canvas_set_color(canvas, ColorWhite);
@@ -701,7 +677,7 @@ static void flash_draw_callback(Canvas* canvas, void* ctx) {
         flash_draw_remove_confirm(canvas, app);
         break;
     case FlashScreenHelp:
-        flash_draw_help(canvas);
+        flash_draw_help(canvas, app);
         break;
     }
 }
@@ -712,23 +688,8 @@ static void flash_input_callback(InputEvent* event, void* ctx) {
     furi_message_queue_put(app->input_queue, event, 0);
 }
 
-static void flash_handle_deck_input(FlashApp* app, InputEvent event) {
-    if(event.type != InputTypeShort) return;
-
-    if(!flash_has_active_cards(app)) {
-        switch(event.key) {
-        case InputKeyOk:
-        case InputKeyUp:
-        case InputKeyDown:
-            app->screen = FlashScreenSettings;
-            app->settings_cursor = FlashSettingResetDeck;
-            return;
-        case InputKeyBack:
-            return;
-        default:
-            return;
-        }
-    }
+static bool flash_handle_deck_input(FlashApp* app, InputEvent event) {
+    if(event.type != InputTypeShort) return true;
 
     switch(event.key) {
     case InputKeyOk:
@@ -754,9 +715,12 @@ static void flash_handle_deck_input(FlashApp* app, InputEvent event) {
             app->screen = FlashScreenRemoveConfirm;
         }
         break;
+    case InputKeyBack:
+        return false;
     default:
         break;
     }
+    return true;
 }
 
 static void flash_handle_settings_input(FlashApp* app, InputEvent event) {
@@ -764,19 +728,29 @@ static void flash_handle_settings_input(FlashApp* app, InputEvent event) {
 
     switch(event.key) {
     case InputKeyUp:
-        if(app->settings_cursor > 0) app->settings_cursor--;
+        if(app->settings_cursor > 0) {
+            app->settings_cursor--;
+
+            if(app->settings_cursor < app->settings_scroll) {
+                app->settings_scroll--;
+            }
+        }
         break;
     case InputKeyDown:
-        if(app->settings_cursor + 1 < FlashSettingCount) app->settings_cursor++;
+        if(app->settings_cursor + 1 < FlashSettingCount) {
+            app->settings_cursor++;
+
+            if(app->settings_cursor >=
+            app->settings_scroll + SETTINGS_VISIBLE_ITEMS) {
+                app->settings_scroll++;
+            }
+        }
         break;
     case InputKeyOk:
         switch(app->settings_cursor) {
         case FlashSettingToggleMode:
             app->mode = app->mode == FlashModeRandom ? FlashModeOrdered : FlashModeRandom;
-            flash_save_state(app);
-            break;
-        case FlashSettingRestoreRemoved:
-            flash_restore_removed_cards(app);
+            // flash_save_state(app);
             break;
         case FlashSettingResetDeck:
             flash_reset_current_deck(app);
@@ -788,6 +762,8 @@ static void flash_handle_settings_input(FlashApp* app, InputEvent event) {
             app->screen = FlashScreenHelp;
             break;
         case FlashSettingBack:
+            app->settings_scroll = 0;
+            app->settings_cursor = FlashSettingToggleMode;
             app->screen = FlashScreenDeck;
             break;
         default:
@@ -806,6 +782,12 @@ static void flash_handle_help_input(FlashApp* app, InputEvent event) {
     if(event.type != InputTypeShort) return;
 
     switch(event.key) {
+    case InputKeyUp:
+        if(app->help_scroll > 0) app->help_scroll--;
+        break;
+    case InputKeyDown:
+        if(app->help_scroll + 1 < HELP_LINE_COUNT) app->help_scroll++;
+        break;
     case InputKeyBack:
     case InputKeyOk:
         app->screen = FlashScreenSettings;
@@ -865,7 +847,10 @@ int32_t flipflash(void* p) {
     app->input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
+    // The Storage service reads your target path, parses the prefix (like /ext/), 
+    // and dynamically routes your request to the correct file system driver.
     app->storage = furi_record_open(RECORD_STORAGE);
+    // A virtual file handle that is used to read and write files on the storage service.
     app->file = storage_file_alloc(app->storage);
     app->text_buffer = furi_string_alloc();
     app->flash_seed = furi_get_tick();
@@ -879,9 +864,10 @@ int32_t flipflash(void* p) {
     app->deck_count = 0;
     app->current_deck_path[0] = '\0';
     app->current_state_path[0] = '\0';
-    app->selected_deck_path[0] = '\0';
     app->screen = FlashScreenDeck;
     app->settings_cursor = FlashSettingToggleMode;
+    app->help_scroll = 0;
+    app->settings_scroll = 0;
 
     view_port_draw_callback_set(app->view_port, flash_draw_callback, app);
     view_port_input_callback_set(app->view_port, flash_input_callback, app);
@@ -918,7 +904,7 @@ int32_t flipflash(void* p) {
 
         switch(app->screen) {
         case FlashScreenDeck:
-            flash_handle_deck_input(app, event);
+            running = flash_handle_deck_input(app, event);
             break;
         case FlashScreenSettings:
             flash_handle_settings_input(app, event);
@@ -938,7 +924,7 @@ int32_t flipflash(void* p) {
         view_port_update(app->view_port);
     }
 
-    flash_save_state(app);
+    // flash_save_state(app);
 
     gui_remove_view_port(app->gui, app->view_port);
     view_port_free(app->view_port);

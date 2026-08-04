@@ -24,4 +24,8 @@
 #define MAX_PATH_LENGTH 192
 #define SELECTED_DECK_FILE_PATH APP_DATA_DIR "/selected_deck.cfg"
 
+#define HELP_LINE_HEIGHT 12
+
+#define SETTINGS_VISIBLE_ITEMS 4
+
 #endif // FLIPFLASH_H
